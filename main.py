@@ -120,14 +120,28 @@ def run_pipeline(skip_sentiment: bool = False):
     midcap_top5 = rank_and_select(midcap_stocks, "midcap", all_sector_return_values, TOP_N)
     smallcap_top5 = rank_and_select(smallcap_stocks, "smallcap", all_sector_return_values, TOP_N)
 
-    # ─── Step 7: Calculate S/R Levels for Top Picks ───
+    # ─── Step 7: Calculate S/R Levels + Preserve OHLCV for Charts ───
     print("\n[STEP 7/8] Calculating support/resistance levels...")
     for stock in midcap_top5 + smallcap_top5:
         df = stock.pop("df", None)
         if df is not None:
             stock["levels"] = find_swing_levels(df)
+            # Preserve OHLCV as serializable lists for candlestick charts
+            stock["ohlcv"] = {
+                "dates": df.index.strftime("%Y-%m-%d").tolist(),
+                "open": df["Open"].round(2).tolist(),
+                "high": df["High"].round(2).tolist(),
+                "low": df["Low"].round(2).tolist(),
+                "close": df["Close"].round(2).tolist(),
+                "volume": df["Volume"].tolist(),
+            }
         else:
             stock["levels"] = {"support": 0, "resistance": 0, "pivot_points": {}}
+            stock["ohlcv"] = {}
+
+    # Compute structured trade levels for chart overlays
+    for stock in midcap_top5 + smallcap_top5:
+        stock["trade_levels"] = _compute_trade_levels(stock)
 
     # ─── Step 8: Generate LLM Rationales ───
     print("\n[STEP 8/8] Generating trading rationales...")
@@ -152,16 +166,14 @@ def run_pipeline(skip_sentiment: bool = False):
     return midcap_top5, smallcap_top5, all_stocks
 
 
-def _template_rationale(stock: dict) -> str:
-    """Fallback rule-based rationale when LLM is unavailable."""
-    symbol = stock.get("symbol", "STOCK")
+def _compute_trade_levels(stock: dict) -> dict:
+    """Compute structured trade levels (Entry/SL/TP1-3) from S/R data."""
     price = stock.get("price", 0)
     levels = stock.get("levels", {})
-    trend = stock.get("trend", {})
-    macd = stock.get("macd", {})
 
-    support = levels.get("support", round(price * 0.97, 2))
-    resistance = levels.get("resistance", round(price * 1.05, 2))
+    support = levels.get("support", 0) or round(price * 0.97, 2)
+    resistance = levels.get("resistance", 0) or round(price * 1.05, 2)
+
     sl = round(support * 0.99, 2) if support else round(price * 0.97, 2)
     tp1 = resistance if resistance else round(price * 1.03, 2)
     tp2 = round(tp1 * 1.03, 2)
@@ -171,7 +183,27 @@ def _template_rationale(stock: dict) -> str:
     if stock.get("rsi", 50) > 70:
         signal = "Wait for Pullback"
 
-    header = f"*{symbol} – {signal} | Entry ~{price} | Target {tp1}–{tp2} | SL {sl}*"
+    return {
+        "entry": round(price, 2),
+        "sl": sl,
+        "tp1": round(tp1, 2),
+        "tp2": round(tp2, 2),
+        "tp3": round(tp3, 2),
+        "signal": signal,
+    }
+
+
+def _template_rationale(stock: dict) -> str:
+    """Fallback rule-based rationale when LLM is unavailable."""
+    symbol = stock.get("symbol", "STOCK")
+    tl = stock.get("trade_levels") or _compute_trade_levels(stock)
+    trend = stock.get("trend", {})
+    macd = stock.get("macd", {})
+
+    header = (
+        f"*{symbol} – {tl['signal']} | Entry ~{tl['entry']} "
+        f"| Target {tl['tp1']}–{tl['tp2']} | SL {tl['sl']}*"
+    )
 
     parts = []
     if trend.get("ema_aligned"):

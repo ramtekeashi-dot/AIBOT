@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import pandas as pd
 from datetime import datetime
 
@@ -426,6 +427,135 @@ def _get_plotly_layout() -> dict:
     }
 
 
+def _render_price_chart(stock: dict):
+    """Render HD candlestick chart with volume, S/R lines, and trade level overlays."""
+    ohlcv = stock.get("ohlcv", {})
+    if not ohlcv or not ohlcv.get("dates"):
+        st.caption("No OHLCV data available for chart. Run a new analysis to generate charts.")
+        return
+
+    dates = ohlcv["dates"]
+    opens = ohlcv["open"]
+    highs = ohlcv["high"]
+    lows = ohlcv["low"]
+    closes = ohlcv["close"]
+    volumes = ohlcv["volume"]
+
+    # Volume bar colors (green = bullish candle, red = bearish)
+    vol_colors = [
+        gc("green") if c >= o else gc("red")
+        for o, c in zip(opens, closes)
+    ]
+
+    is_dark = get_theme() == "dark"
+    bg_paper = "#0a0e17" if is_dark else "#ffffff"
+    bg_plot = "#111827" if is_dark else "#f8fafc"
+    grid_color = "#1e293b" if is_dark else "#e2e8f0"
+    text_color = "#e0e6ed" if is_dark else "#1a202c"
+
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True,
+        row_heights=[0.8, 0.2], vertical_spacing=0.02,
+    )
+
+    # ── Candlestick trace ──
+    fig.add_trace(go.Candlestick(
+        x=dates, open=opens, high=highs, low=lows, close=closes,
+        increasing_line_color=gc("green"), decreasing_line_color=gc("red"),
+        increasing_fillcolor=gc("green"), decreasing_fillcolor=gc("red"),
+        name="Price", showlegend=False,
+    ), row=1, col=1)
+
+    # ── EMA Trend Lines ──
+    close_series = pd.Series(closes, dtype=float)
+    if len(close_series) >= 20:
+        ema20 = close_series.ewm(span=20, adjust=False).mean().round(2).tolist()
+        fig.add_trace(go.Scatter(
+            x=dates, y=ema20, mode="lines", name="EMA 20",
+            line=dict(color=gc("yellow"), width=1.5, dash="solid"),
+            opacity=0.8,
+        ), row=1, col=1)
+    if len(close_series) >= 50:
+        ema50 = close_series.ewm(span=50, adjust=False).mean().round(2).tolist()
+        fig.add_trace(go.Scatter(
+            x=dates, y=ema50, mode="lines", name="EMA 50",
+            line=dict(color="#a78bfa", width=1.5, dash="solid"),
+            opacity=0.8,
+        ), row=1, col=1)
+
+    # ── Volume bars ──
+    fig.add_trace(go.Bar(
+        x=dates, y=volumes, marker_color=vol_colors,
+        opacity=0.5, name="Volume", showlegend=False,
+    ), row=2, col=1)
+
+    # ── Helper: add horizontal level line ──
+    def add_level_line(y_val, label, color, dash="dash", width=1):
+        if not y_val or y_val == 0:
+            return
+        fig.add_hline(
+            y=y_val, line_dash=dash, line_color=color, line_width=width,
+            annotation_text=f" {label}: {y_val}",
+            annotation_position="right",
+            annotation_font_size=10,
+            annotation_font_color=color,
+            row=1, col=1,
+        )
+
+    # ── Support / Resistance lines ──
+    levels = stock.get("levels", {})
+    add_level_line(levels.get("support"), "Support", gc("green"), "dot", 1)
+    add_level_line(levels.get("resistance"), "Resistance", gc("red"), "dot", 1)
+
+    # ── Pivot point lines ──
+    pivots = levels.get("pivot_points", {})
+    add_level_line(pivots.get("pivot"), "Pivot", gc("blue"), "dash", 1)
+    add_level_line(pivots.get("s1"), "S1", "#22c55e", "dot", 1)
+    add_level_line(pivots.get("s2"), "S2", "#16a34a", "dot", 1)
+    add_level_line(pivots.get("r1"), "R1", "#fb923c", "dot", 1)
+    add_level_line(pivots.get("r2"), "R2", "#ef4444", "dot", 1)
+
+    # ── Trade level lines (Entry/SL/TP) ──
+    tl = stock.get("trade_levels", {})
+    add_level_line(tl.get("entry"), "ENTRY", gc("blue"), "solid", 2)
+    add_level_line(tl.get("sl"), "SL", gc("red"), "solid", 2)
+    add_level_line(tl.get("tp1"), "TP1", "#34d399", "solid", 1)
+    add_level_line(tl.get("tp2"), "TP2", "#10b981", "solid", 1)
+    add_level_line(tl.get("tp3"), "TP3", "#059669", "solid", 1)
+
+    # ── Layout ──
+    symbol = stock.get("symbol", "")
+    fig.update_layout(
+        title=None,
+        paper_bgcolor=bg_paper,
+        plot_bgcolor=bg_plot,
+        font=dict(family="JetBrains Mono, monospace", color=text_color, size=11),
+        height=600,
+        margin=dict(t=10, b=30, l=50, r=120),
+        xaxis_rangeslider_visible=False,
+        xaxis2_rangeslider_visible=False,
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, font=dict(size=10)),
+    )
+
+    # Style axes
+    for axis in ["xaxis", "xaxis2"]:
+        fig.update_layout(**{axis: dict(gridcolor=grid_color, showgrid=False)})
+    fig.update_layout(
+        yaxis=dict(gridcolor=grid_color, title="Price (INR)", side="right"),
+        yaxis2=dict(gridcolor=grid_color, title="Vol", side="right", showgrid=False),
+    )
+
+    st.plotly_chart(
+        fig, width="stretch",
+        config={
+            "displayModeBar": True,
+            "displaylogo": False,
+            "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+        },
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════
 # SECTION 5: COMPONENT RENDERERS
 # ═══════════════════════════════════════════════════════════════════
@@ -491,7 +621,14 @@ def _render_stock_card(rank: int, stock: dict):
     rationale = stock.get("rationale", "")
     if rationale:
         with st.expander("Trading Signal", expanded=False):
-            st.markdown(rationale)
+            # Render as styled monospace text to prevent LLM markdown from blowing up layout
+            import html as html_mod
+            safe_text = html_mod.escape(rationale).replace("\n", "<br>")
+            st.markdown(
+                f'<div style="font-family:\'JetBrains Mono\',monospace; font-size:0.8rem; '
+                f'line-height:1.6; color:var(--text-secondary);">{safe_text}</div>',
+                unsafe_allow_html=True,
+            )
 
 
 def _render_scoreboard(midcap: list, smallcap: list):
@@ -538,6 +675,12 @@ def _render_detail_view(midcap: list, smallcap: list):
 
     st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 
+    # ── HD Candlestick Chart ──
+    st.markdown('<div class="sec-label">PRICE ACTION</div>', unsafe_allow_html=True)
+    _render_price_chart(stock)
+
+    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
+
     # Charts
     norm = stock.get("normalized_scores", {})
     if norm:
@@ -558,7 +701,7 @@ def _render_detail_view(midcap: list, smallcap: list):
             ))
             fig.add_trace(go.Bar(
                 x=[c.upper() for c in components], y=weighted,
-                name="Weighted", marker_color="#3b82f680",
+                name="Weighted", marker_color="rgba(59, 130, 246, 0.5)",
                 marker_line_color="#3b82f6", marker_line_width=1,
             ))
             layout = _get_plotly_layout()
@@ -566,7 +709,7 @@ def _render_detail_view(midcap: list, smallcap: list):
             layout["height"] = 340
             layout["legend"] = {"orientation": "h", "yanchor": "bottom", "y": 1.02, "font": {"size": 10}}
             fig.update_layout(**layout)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
         with ch2:
             st.markdown('<div class="sec-label">SCORE PROFILE</div>', unsafe_allow_html=True)
@@ -589,7 +732,7 @@ def _render_detail_view(midcap: list, smallcap: list):
             rl["height"] = 340
             rl["showlegend"] = False
             fig_r.update_layout(**rl)
-            st.plotly_chart(fig_r, use_container_width=True)
+            st.plotly_chart(fig_r, width="stretch")
 
     # Technical Indicators + Swing Levels
     tc1, tc2 = st.columns(2)
@@ -652,14 +795,40 @@ def _render_detail_view(midcap: list, smallcap: list):
         """, unsafe_allow_html=True)
 
         if sent.get("details"):
-            for d in sent["details"][:3]:
-                st.caption(f"[{d.get('label', '')}] {d.get('headline', '')[:80]}")
+            for d in sent["details"][:5]:
+                label = d.get("label", "neutral")
+                headline = d.get("headline", "")
+                url = d.get("url", "")
+                lbl_color = gc(sentiment_to_glow(label))
+                if url:
+                    st.markdown(
+                        f'<div style="font-size:0.78rem; margin-top:4px; line-height:1.4;">'
+                        f'<span style="color:{lbl_color}; font-weight:600; font-family:\'JetBrains Mono\',monospace;">'
+                        f'[{label.upper()}]</span> '
+                        f'<a href="{url}" target="_blank" style="color:var(--text-secondary); text-decoration:none;">'
+                        f'{headline}</a></div>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        f'<div style="font-size:0.78rem; margin-top:4px; line-height:1.4;">'
+                        f'<span style="color:{lbl_color}; font-weight:600; font-family:\'JetBrains Mono\',monospace;">'
+                        f'[{label.upper()}]</span> '
+                        f'<span style="color:var(--text-secondary);">{headline}</span></div>',
+                        unsafe_allow_html=True,
+                    )
 
     # Trading Signal
     rationale = stock.get("rationale", "")
     if rationale:
         st.markdown('<div class="sec-label" style="margin-top:20px;">TRADING SIGNAL</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="signal-box">{rationale}</div>', unsafe_allow_html=True)
+        import html as html_mod
+        safe_rationale = html_mod.escape(rationale).replace("\n", "<br>")
+        st.markdown(
+            f'<div class="signal-box" style="font-family:\'JetBrains Mono\',monospace; '
+            f'font-size:0.82rem; line-height:1.7;">{safe_rationale}</div>',
+            unsafe_allow_html=True,
+        )
 
 
 def _render_chat():
@@ -696,7 +865,7 @@ def _render_chat():
         "What sectors are showing the most momentum?",
     ]
     for col, suggestion in zip(cols, suggestions):
-        if col.button(suggestion, key=f"suggest_{suggestion[:10]}", use_container_width=True):
+        if col.button(suggestion, key=f"suggest_{suggestion[:10]}", width="stretch"):
             st.session_state["_pending_question"] = suggestion
             st.rerun()
 
@@ -857,7 +1026,7 @@ def main():
 
         st.divider()
 
-        if st.button("Run Analysis", type="primary", use_container_width=True):
+        if st.button("Run Analysis", type="primary", width="stretch"):
             _run_analysis()
 
         skip_sentiment = st.checkbox("Skip Sentiment (faster)", value=False)
