@@ -58,6 +58,12 @@ def run_pipeline(skip_sentiment: bool = False):
 
     # ─── Step 5: Compute Technicals + Delivery + Sentiment ───
     print("\n[STEP 5/8] Analyzing stocks (technicals + delivery + sentiment)...")
+
+    # Pre-load FinBERT model ONCE before threads start (avoids 10x duplicate loads)
+    if not skip_sentiment:
+        from aibot.analysis.sentiment import preload_model
+        preload_model()
+
     all_stocks = {}
 
     def analyze_stock(symbol: str) -> tuple[str, dict]:
@@ -148,10 +154,26 @@ def run_pipeline(skip_sentiment: bool = False):
 
 def _template_rationale(stock: dict) -> str:
     """Fallback rule-based rationale when LLM is unavailable."""
-    parts = []
+    symbol = stock.get("symbol", "STOCK")
+    price = stock.get("price", 0)
+    levels = stock.get("levels", {})
     trend = stock.get("trend", {})
     macd = stock.get("macd", {})
 
+    support = levels.get("support", round(price * 0.97, 2))
+    resistance = levels.get("resistance", round(price * 1.05, 2))
+    sl = round(support * 0.99, 2) if support else round(price * 0.97, 2)
+    tp1 = resistance if resistance else round(price * 1.03, 2)
+    tp2 = round(tp1 * 1.03, 2)
+    tp3 = round(tp1 * 1.06, 2)
+
+    signal = "Swing Long Setup"
+    if stock.get("rsi", 50) > 70:
+        signal = "Wait for Pullback"
+
+    header = f"*{symbol} – {signal} | Entry ~{price} | Target {tp1}–{tp2} | SL {sl}*"
+
+    parts = []
     if trend.get("ema_aligned"):
         parts.append("Strong uptrend with EMA alignment")
     elif trend.get("pct_5d", 0) > 0:
@@ -168,7 +190,7 @@ def _template_rationale(stock: dict) -> str:
     if vol > 1.3:
         parts.append(f"volume expanding {vol:.1f}x confirms institutional interest")
 
-    return ". ".join(parts) + "."
+    return header + "\n\n" + ". ".join(parts) + "."
 
 
 def main():

@@ -29,25 +29,39 @@ def _get_client():
 
 
 SYSTEM_PROMPT = """You are an expert swing trading analyst specializing in Indian equities (NSE).
-Given stock analysis data, generate a concise 2-3 line trading rationale.
-Be specific, actionable, and trader-friendly. No disclaimers. No generic advice.
-Focus on: entry logic, key catalysts, and risk/reward setup."""
+Given stock analysis data, generate a structured trading signal with rationale.
+
+You MUST output in this EXACT format (replace values with your analysis):
+
+*SYMBOL – Signal | Entry ~PRICE | Target PRICE–PRICE | SL PRICE*
+
+RATIONALE_TEXT (2-3 lines explaining the setup, key catalysts, risk/reward)
+
+Rules for generating signals:
+- Signal: "Swing Long Setup" for bullish, "Swing Short Setup" for bearish, "Wait for Pullback" if overbought
+- Entry: Use current price or nearby support for longs
+- SL (Stop Loss): Use nearest support level or 2-3% below entry
+- TP1: Use nearest resistance level
+- TP2: Use R1 pivot or 3-5% above entry
+- TP3: Use R2 pivot or 7-10% above entry for strong setups
+- Be specific with INR prices. No disclaimers. No generic advice."""
 
 
 def generate_rationale(stock_data: dict) -> str:
     """
-    Generate a 2-3 line swing trading rationale for a stock using LLM.
+    Generate a trading signal with rationale for a stock using LLM.
 
     Args:
         stock_data: dict with symbol, swing_score, trend, rsi, macd, atr_pct,
                     sentiment, levels, volume_expansion, delivery_pct, etc.
 
-    Returns: rationale string.
+    Returns: rationale string with BUY/SELL signals and TP/SL levels.
     """
     trend = stock_data.get("trend", {})
     macd = stock_data.get("macd", {})
     sentiment = stock_data.get("sentiment", {})
     levels = stock_data.get("levels", {})
+    pivots = levels.get("pivot_points", {})
     norm = stock_data.get("normalized_scores", {})
 
     user_prompt = f"""Stock: {stock_data.get('symbol')}
@@ -63,11 +77,14 @@ ATR%: {stock_data.get('atr_pct')}%
 Volume Expansion: {stock_data.get('volume_expansion', 1.0):.1f}x
 Delivery%: {stock_data.get('delivery_pct')}%
 Sentiment: {sentiment.get('label')} (confidence: {sentiment.get('score', 0):.2f})
+
 Support: {levels.get('support')} | Resistance: {levels.get('resistance')}
+Pivot: {pivots.get('pivot', 'N/A')} | S1: {pivots.get('s1', 'N/A')} | S2: {pivots.get('s2', 'N/A')}
+R1: {pivots.get('r1', 'N/A')} | R2: {pivots.get('r2', 'N/A')}
 
 Component Scores: Trend={norm.get('trend', 0):.0f}, Volume={norm.get('volume', 0):.0f}, Momentum={norm.get('momentum', 0):.0f}, Volatility={norm.get('volatility', 0):.0f}, Delivery={norm.get('delivery', 0):.0f}, Sentiment={norm.get('sentiment', 0):.0f}, Sector={norm.get('sector', 0):.0f}
 
-Generate a 2-3 line swing trading rationale."""
+Generate the trading signal with Entry, SL, TP1, TP2, TP3 and a 2-3 line rationale."""
 
     try:
         client, provider = _get_client()
